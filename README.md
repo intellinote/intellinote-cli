@@ -1,14 +1,90 @@
 # intellinote-cli
 
-A simple command-line client to the Intellinote REST API.
+A simple Node.js-based command-line client to the Intellinote REST API.
 
 ## Installing
 
-...installation documentation to come...
+### Via npm
+
+intellinote-cli is deployed as an [npm module](https://npmjs.org/) under the name [`intellinote-cli`](https://npmjs.org/package/intellinote-cli). Hence you can install a pre-packaged version with the command:
+
+```bash
+npm install -g intellinote-cli
+```
+
+Omit the `-g` part to install the module "locally" (in the current working directory).
+
+Once installed, the command `intellinote` should be available in your `node_modules/.bin` directory.
+
+### For use as a library
+
+You can use intellinote-cli within your Node.js module by adding a line like:
+
+```javascript
+"intellinote-cli": "latest"
+```
+
+to the `dependencies` or `devDependencies` part of your `package.json` file.
+
+### From source
+
+The source code and documentation for intellinote-cli is available on GitHub at [intellinote/intellinote-cli](https://github.com/intellinote/intellinote-cli).  You can clone the repository via:
+
+```bash
+git clone git@github.com:intellinote/intellinote-cli
+```
+
+Once the code is obtain, you can run:
+
+```bash
+make install bin
+```
+
+to install any dependencies and build the executeable script.
+
+Once installed, the command `intellinote` should be available in the `intellinote-cli/bin` directory.
 
 ## Using
 
-...usage documentation to come...
+### help
+
+Invoke `intellinote` with the command line parameter `--help` for a quick usage summary:
+
+```bash
+$ ./bin/intellinote --help
+USE: intellinote login|logout|(GET|POST|PUT|PATCH|DELETE|HEAD <URL> [<BODY>])
+```
+
+### "Raw" API calls
+
+intellinote-cli provides a simple way to invoke [Intellinote's REST API](https://api.intellinote.net/) using the following form:
+
+    intellinote <HTTP-VERB> <PATH> [<BODY>]
+
+For example, the following command invokes the REST method `/v2.0/ping` (which returns a timestamp):
+
+```bash
+$ ./bin/intellinote GET /v2.0/ping"
+{"timestamp":1423504162750}
+```
+
+### login
+
+Before you can use intellinote-cli you must authenticate to Intellinote using the `login` command.
+
+intellinote-cli ask you for your username and password and then use the OAuth2 protocol to exchange those credentials for an "access token"
+
+```bash
+$ ./bin/intellinote login
+Username? jane.doe@example.com
+Password? ********
+```
+
+intellinote-cli does NOT store your username and password.  It does however store the access token value in a file located at `$HOME/.intellinote`.  In a limited sense, that access token can be used much like a password.  You should keep that file secure.
+
+### logout
+
+Invoking `intellinote logout` will remove all log-in information from the configuration file at `$HOME/.intellinote`.  You will need to log in again to access your Intellinote data.
 
 ## Licensing
 
