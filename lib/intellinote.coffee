@@ -132,7 +132,7 @@ class Intellinote
 
   ping:(callback)=>
     params = {
-      url:@abs "/v2.0/ping"
+      url:@abs "/v2.0/ping/authed"
       headers: {
         Authorization: "Bearer #{@config.oauth.access}"
       }
@@ -228,9 +228,10 @@ class Intellinote
           delete @config.oauth.refreshed
           delete @config.oauth.refresh
           @ensure_active_access_token (err,success)=>
-            if success
+            if not err? and success
               process.exit(0)
             else
+              console.error "ERROR: Unable to log in.\n"
               process.exit(2)
 
         # LOGOUT
@@ -243,6 +244,12 @@ class Intellinote
               process.exit(2)
             else
               process.exit(0)
+
+        # VERSION
+        when '--version', '-v'
+          pkg = require(path.join(__dirname,'..','package.json'))
+          console.log "#{pkg.name} #{pkg.version}"
+          process.exit 0
 
         # HELP OR ERROR
         else
