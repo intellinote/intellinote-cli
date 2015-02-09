@@ -23,7 +23,7 @@ We're happy to accept any help you can offer, but the following
 guidelines can help streamline the process for everyone.
 
  * You can report any bugs at
-   [github.com/intellinote/inote-util/issues](https://github.com/intellinote/intellinote-cli/issues).
+   [github.com/intellinote/intellinote-cli/issues](https://github.com/intellinote/intellinote-cli/issues).
 
     - We'll be able to address the issue more easily if you can
       provide an demonstration of the problem you are
