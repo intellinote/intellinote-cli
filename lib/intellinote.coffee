@@ -113,6 +113,8 @@ class Intellinote
         @config ?= {}
         @config.oauth ?= {}
         @config.oauth.access = body.access_token
+        if body.refresh_token?
+          @config.oauth.refresh = body.refresh_token
         @config.oauth.refreshed = Date.now()
         callback(null)
 
