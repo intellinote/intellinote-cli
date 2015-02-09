@@ -1,6 +1,6 @@
 # intellinote-cli
 
-A simple command-client client to the Intellinote REST API.
+A simple command-line client to the Intellinote REST API.
 
 ## Installing
 
