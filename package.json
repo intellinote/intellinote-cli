@@ -7,7 +7,8 @@
   "license"     : "MIT",
   "author"      : "Intellinote <https://www.intellinote.net/>",
   "dependencies": {
-    "request":"latest"
+    "request":"latest",
+    "editor":"latest"
   },
   "devDependencies": {
     "coffee-script"         : "latest",
