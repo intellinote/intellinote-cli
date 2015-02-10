@@ -1,3 +1,9 @@
+# TODO - refactor for DRYness
+# TODO - rationalize command line parameters
+# TODO - update use instructions
+# TODO - unit (or at least functional) tests
+# TODO - extract readline extensions into inote-util
+
 readline = require 'readline'
 fs       = require 'fs'
 path     = require 'path'
@@ -255,6 +261,21 @@ class Intellinote
       else
         callback null,body
 
+  get_org:(org_id,callback)=>
+    params = {
+      url:@abs("/v2.0/orgs/#{org_id}")
+      headers: { Authorization: "Bearer #{@config.oauth.access}" }
+      jar:null
+      json:true
+    }
+    request.get params, (err,response,body)=>
+      if err?
+        callback(err)
+      else unless /^2[0-9][0-9]$/.test "#{response?.statusCode}"
+        callback(new Error("Non-2xx-series status code (#{response?.statusCode})"))
+      else
+        callback null,body
+
   list_workspaces:(org_id,callback)=>
     params = {
       url:@abs("/v2.0/org/#{org_id}/workspaces")
@@ -270,9 +291,40 @@ class Intellinote
       else
         callback null,body
 
+  get_workspace:(org_id,workspace_id,callback)=>
+    params = {
+      url:@abs("/v2.0/org/#{org_id}/workspace/#{workspace_id}")
+      headers: { Authorization: "Bearer #{@config.oauth.access}" }
+      jar:null
+      json:true
+    }
+    request.get params, (err,response,body)=>
+      if err?
+        callback(err)
+      else unless /^2[0-9][0-9]$/.test "#{response?.statusCode}"
+        callback(new Error("Non-2xx-series status code (#{response?.statusCode})"))
+      else
+        callback null,body
+
   list_notes:(org_id,workspace_id,note_type,callback)=>
     params = {
       url:@abs("/v2.0/org/#{org_id}/workspace/#{workspace_id}/notes?note_type=#{note_type}")
+      headers: { Authorization: "Bearer #{@config.oauth.access}" }
+      jar:null
+      json:true
+    }
+    request.get params, (err,response,body)=>
+      if err?
+        # console.error "ERROR",err
+        callback(err)
+      else unless /^2[0-9][0-9]$/.test "#{response?.statusCode}"
+        callback(new Error("Non-2xx-series status code (#{response?.statusCode})"))
+      else
+        callback null,body
+
+  get_note:(org_id,workspace_id,note_id,callback)=>
+    params = {
+      url:@abs("/v2.0/org/#{org_id}/workspace/#{workspace_id}/note/#{note_id}")
       headers: { Authorization: "Bearer #{@config.oauth.access}" }
       jar:null
       json:true
@@ -323,6 +375,11 @@ class Intellinote
           if err?
             callback(err)
           else
+            @config.current ?= {}
+            unless org_id is @config.current.org_id
+              delete @config.current.workspace_id
+              delete @config.current.note_id
+            @config.current.org_id = org_id
             callback(null,org_id)
 
   choose_workspace:(org_id,callback)=>
@@ -338,6 +395,10 @@ class Intellinote
           if err?
             callback(err)
           else
+            @config.current ?= {}
+            unless workspace_id is @config.current.workspace_id
+              delete @config.current.note_id
+            @config.current.workspace_id = workspace_id
             callback(null,workspace_id)
 
   choose_note:(org_id,workspace_id,note_type,callback)=>
@@ -357,6 +418,8 @@ class Intellinote
           if err?
             callback(err)
           else
+            @config.current ?= {}
+            @config.current.note_id = note_id
             callback(null,note_id)
 
   _request:(method,uri,body,stream,callback)=>
@@ -384,9 +447,43 @@ class Intellinote
     rl = make_readline { input: process.stdin, output: process.stdout }
     rl.question "Title: ", (title)=>
       rl.question "Tags: ", (tags)=>
+        if tags?
+          tags = tags.split ','
+        else
+          tags = []
+        tags = tags.map((t)->{label:t})
         rl.multiline "Body", (body)=>
-          console.log title, tags.split(','), body
-          callback()
+          @choose_org (err,org_id)=>
+            if err?
+              callback err
+            else
+              @choose_workspace org_id,(err,workspace_id)=>
+                if err?
+                  callback err
+                else
+                  payload = {
+                    note_type: type.toUpperCase()
+                    title:title
+                    body:body
+                    tags:tags
+                  }
+                  @post_note org_id, workspace_id, payload, callback
+
+  post_note:(org_id,workspace_id,payload,callback)=>
+    params = {
+      url:@abs("/v2.0/org/#{org_id}/workspace/#{workspace_id}/note")
+      headers: { Authorization: "Bearer #{@config.oauth.access}" }
+      jar:null
+      json:true
+      body: payload
+    }
+    request.post params, (err,response,body)=>
+      if err?
+        callback(err)
+      else unless /^2[0-9][0-9]$/.test "#{response?.statusCode}"
+        callback(new Error("Non-2xx-series status code (#{response?.statusCode})"))
+      else
+        callback null,body
 
   main:()=>
     @read_config ()=>
@@ -439,13 +536,10 @@ class Intellinote
             @config.current ?= {}
             if process.argv[3] in ['org','workspace','note','task']
               @choose_org (err,org_id)=>
-                @config.current.org_id = org_id
                 if process.argv[3] in ['workspace','note','task']
                   @choose_workspace org_id,(err,workspace_id)=>
-                    @config.current.workspace_id = workspace_id
                     if process.argv[3] in ['note','task']
                       @choose_note org_id,workspace_id,process.argv[3],(err,note_id)=>
-                        @config.current.note_id = note_id
                         @write_config ()=>process.exit(0)
                     else
                       @write_config ()=>process.exit(0)
@@ -454,14 +548,57 @@ class Intellinote
             else
               console.error "Not recognized: ",process.argv[2..process.argv.length].join(' ')
 
+        when 'fetch'
+          @ensure_active_access_token ()=>
+            @config.current ?= {}
+            if process.argv[3] in ['org','workspace','note','task']
+              @choose_org (err,org_id)=>
+                if process.argv[3] in ['workspace','note','task']
+                  @choose_workspace org_id,(err,workspace_id)=>
+                    if err?
+                      console.error "ERROR",err
+                      process.exit(1)
+                    else
+                      if process.argv[3] in ['note','task']
+                        @choose_note org_id,workspace_id,process.argv[3],(err,note_id)=>
+                          if err?
+                            console.error "ERROR",err
+                            process.exit(1)
+                          else
+                            @get_note org_id,workspace_id,note_id,(err,note)=>
+                              if err?
+                                process.exit(1)
+                              else
+                                console.log(JSON.stringify(note,null,2)+"\n")
+                                process.exit(0)
+                      else
+                        @get_workspace org_id, workspace_id,(err,workspace)=>
+                          if err?
+                            process.exit(1)
+                          else
+                            console.log(JSON.stringify(workspace,null,2)+"\n")
+                            process.exit(0)
+                else
+                  @get_org org_id,(err,org)=>
+                    if err?
+                      process.exit(1)
+                    else
+                      console.log(JSON.stringify(org,null,2)+"\n")
+                      process.exit(0)
+            else
+              console.error "Not recognized: ",process.argv[2..process.argv.length].join(' ')
+              process.exit(1)
+
         # ADD NOTE/TASK
         when '+note','+task'
-          @interactive_add_note process.argv[2].substring(1),(err)=>
-            if err?
-              console.error "ERROR:",err
-              process.exit(2)
-            else
-              process.exit(0)
+          @ensure_active_access_token ()=>
+            @interactive_add_note process.argv[2].substring(1),(err,response)=>
+              if err?
+                console.error "ERROR:",err
+                process.exit(2)
+              else
+                console.log "Created",response
+                @write_config ()=>process.exit(0)
 
         # VERSION
         when '--version', '-v'
