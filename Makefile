@@ -166,7 +166,6 @@ module: js coffee-bin
 	cp -r lib $(MODULE_DIR)
 	cp -r bin $(MODULE_DIR)
 	cp $(PACKAGE_JSON) $(MODULE_DIR)
-	cp Makefile $(MODULE_DIR)
 	cp LICENSE.txt $(MODULE_DIR)
 	cp README.md $(MODULE_DIR)
 	mv module $(PACKAGE_DIR)
