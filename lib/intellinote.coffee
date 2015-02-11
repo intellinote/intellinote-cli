@@ -9,7 +9,6 @@ readline = require 'readline'
 fs       = require 'fs'
 path     = require 'path'
 request  = require 'request'
-TermList = require 'term-list'
 
 TILDE = process.env.HOME || process.env.HOMEPATH || process.env.USERPROFILE
 CONFIG_FILE = path.join(TILDE,'.intellinote')
@@ -389,6 +388,7 @@ class Intellinote
     unless choices?.length > 0
       callback(null,null)
     else
+      TermList = require 'term-list'
       console.log prompt
       # list = new TermList(({ marker: '\x1b[36m› \x1b[0m', markerLength: 2 }))
       list = new TermList()
