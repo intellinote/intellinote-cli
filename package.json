@@ -8,7 +8,8 @@
   "author"      : "Intellinote <https://www.intellinote.net/>",
   "dependencies": {
     "request":"latest",
-    "editor":"latest"
+    "editor":"latest",
+    "term-list":"latest"
   },
   "devDependencies": {
     "coffee-script"         : "latest",

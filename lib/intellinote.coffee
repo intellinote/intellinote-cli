@@ -1,17 +1,57 @@
 # TODO - refactor for DRYness
 # TODO - rationalize command line parameters
-# TODO - update use instructions
 # TODO - unit (or at least functional) tests
-# TODO - extract readline extensions into inote-util
+# TODO - update use instructions
+# TODO - consider https://www.npmjs.com/package/chalk
+# TODO - extract readline extensions into inote-util (?)
 
 readline = require 'readline'
 fs       = require 'fs'
 path     = require 'path'
 request  = require 'request'
+TermList = require 'term-list'
 
 TILDE = process.env.HOME || process.env.HOMEPATH || process.env.USERPROFILE
 CONFIG_FILE = path.join(TILDE,'.intellinote')
 REFRESH_ACCESS_TOKEN_AFTER = 15*60*1000
+
+HELP =  """
+USE:
+  intellinote ACTION
+where ACTION is
+  list orgs
+    - to view a list of available orgs
+  list workspaces in org <ORG-ID>
+    - to view a list of available workspaces
+  list notes|tasks in workspace <WORKSPACE-ID> [in org <ORG-ID>]
+    - to view a list of available notes or tasks
+  list attachments in note|task <NOTE-ID> [in workspace <WORKSPACE-ID> in org <ORG-ID>]
+    - to view a list of available attachments
+  fetch org <ORG-ID>
+    - to retrieve the specified org
+  fetch workspace <WORKSPACE-ID> [in org <ORG-ID>]
+    - to retrieve the specified workspace
+  fetch note|task <NOTE-ID> [in workspace <WORKSPACE-ID> in org <ORG-ID>]
+    - to retrieve the specified note or task
+  fetch attachment <ATTACHMENT-ID> [in note|task <NOTE-ID> [in workspace <WORKSPACE-ID> in org <ORG-ID>]]
+    - to retrieve the specified attachment
+  get org|workspace|note|task|attachment
+    - to fetch an interactively selected object
+  +task|+note
+    - to interactively create a task or note
+  -X GET|POST|PUT|PATCH|DELETE|HEAD <URL> [<BODY-AS-JSON-STRING>]
+    - to execute an arbitrary REST method
+  login
+    - to log in
+  logout
+    - to log out
+  ping
+    - to test your connection to the server
+  --version
+    - to see version information
+  --help
+    - to see this message
+"""
 
 make_readline = ( args... )=>
   rl = readline.createInterface args...
@@ -142,6 +182,7 @@ class Intellinote
       body:{ username:username, password:password }
       jar:cookie_jar
       json:true
+      followRedirect:false
     }
     request.post params, (err,response,body)=>
       unless response?.statusCode is 302
@@ -160,7 +201,6 @@ class Intellinote
             @config.oauth ?= {}
             @config.oauth.refresh = response.headers.location.match(/^\/\?code=([^&$]+)(&|$)/)?[1]
             callback(null)
-
 
   get_access_token:(callback)=>
     params = {
@@ -186,29 +226,13 @@ class Intellinote
         @config.oauth.refreshed = Date.now()
         callback(null)
 
-  # get_orgs:(callback)=>
-  #   params = {
-  #     url:@abs("/v2.0/orgs")
-  #     headers: {
-  #       Authorization: "Bearer #{@config.oauth.access}"
-  #     }
-  #     jar:null
-  #     json:true
-  #   }
-  #   request.get params, (err,response,body)=>
-  #     callback err,response?.statusCode,body
-
   ping:(callback)=>
-    params = {
-      url:@abs "/v2.0/ping/authed"
-      headers: {
-        Authorization: "Bearer #{@config.oauth.access}"
-      }
-      jar:null
-      json:true
-    }
-    request.get params, (err,response,body)=>
-      callback err,response?.statusCode,body
+    @http "get", "/v2.0/ping/authed", callback
+
+  ping_ok:(callback)=>
+    @ping (err,sc,body,response,params)=>
+      success = (not err?) and (/^2[0-9][0-9]$/.test "#{sc}") and (body?.timestamp?)
+      callback( success )
 
   ensure_access_token:(callback)=>
     if @config.oauth?.access? and @config.oauth?.refreshed? and (Date.now() - @config.oauth.refreshed) < REFRESH_ACCESS_TOKEN_AFTER
@@ -219,153 +243,46 @@ class Intellinote
       @ensure_active_access_token(callback)
 
   ensure_active_access_token:(callback)=>
-    if @config.oauth?.access?
-      @ping (err,status_code,body)=>
-        unless status_code is 200 and body?.timestamp?
+    if @config.oauth?.access?                                                 # if we already have an access token...
+      @ping_ok (success)=>                                                    # ...test it...
+        if success                                                            # ......on success, return `true`.
+          callback null, true
+        else                                                                  # ......on failure, delete that access token and try again.
           delete @config.oauth.access
           @ensure_active_access_token(callback)
-        else
-          callback(null,true)
-    else if @config.oauth?.refresh?
-      @get_access_token (err)=>
-        @ping (err,status_code,body)=>
-          unless status_code is 200 and body?.timestamp?
+    else if @config.oauth?.refresh?                                           # else if we already have a refresh token...
+      @get_access_token (err)=>                                               # ...use it to get a new access token...
+        @ping_ok (success)=>                                                  # ......test it...
+          if success                                                          # .........on success, write the access token to the config and return `true`.
+            @write_config (err)=>
+              callback null, true
+          else                                                                # .........on failure, delete the refresh token and try again.
             delete @config.oauth.refresh
-            @ensure_active_access_token(callback)
-          else
-            @write_config ()=>
-              callback(null,true)
-    else
-      @get_credentials (err,u,p)=>
-        @get_refresh_token u,p,(err)=>
-          @get_access_token (err)=>
-            @ping (err,status_code,body)=>
-              unless status_code is 200 and body?.timestamp?
+            @ensure_active_access_token(callback)                             #
+    else                                                                      # else when we have neither access nor refresh token...
+      @get_credentials (err,u,p)=>                                            # ...ask the user for username and password...
+        if err?
+          @exit_error "Error getting credentials (#{err})"
+        @get_refresh_token u,p,(err)=>                                        # ......use them to obtain a refresh token...
+          if err?
+            @exit_error "Error getting refresh token (#{err})"
+          @get_access_token (err)=>                                           # .........use that to obtain an access token...
+            if err?
+              @exit_error "Error getting access token (#{err})"
+            @ping_ok (success)=>                                              # ......test it...
+              if success                                                      # .........on success, write the refresh and access tokens to the config and return `true`.
+                @write_config (err)=>
+                  callback null, true
+              else                                                            # .........on failure, report failure to caller.
                 callback(new Error("Unable to obtain an access token"),false)
-              else
-                @write_config ()=>
-                  callback(null,true)
-
-  list_orgs:(callback)=>
-    params = {
-      url:@abs("/v2.0/orgs")
-      headers: { Authorization: "Bearer #{@config.oauth.access}" }
-      jar:null
-      json:true
-    }
-    request.get params, (err,response,body)=>
-      if err?
-        callback(err)
-      else unless /^2[0-9][0-9]$/.test "#{response?.statusCode}"
-        callback(new Error("Non-2xx-series status code (#{response?.statusCode})"))
-      else
-        callback null,body
-
-  get_org:(org_id,callback)=>
-    params = {
-      url:@abs("/v2.0/orgs/#{org_id}")
-      headers: { Authorization: "Bearer #{@config.oauth.access}" }
-      jar:null
-      json:true
-    }
-    request.get params, (err,response,body)=>
-      if err?
-        callback(err)
-      else unless /^2[0-9][0-9]$/.test "#{response?.statusCode}"
-        callback(new Error("Non-2xx-series status code (#{response?.statusCode})"))
-      else
-        callback null,body
-
-  list_workspaces:(org_id,callback)=>
-    params = {
-      url:@abs("/v2.0/org/#{org_id}/workspaces")
-      headers: { Authorization: "Bearer #{@config.oauth.access}" }
-      jar:null
-      json:true
-    }
-    request.get params, (err,response,body)=>
-      if err?
-        callback(err)
-      else unless /^2[0-9][0-9]$/.test "#{response?.statusCode}"
-        callback(new Error("Non-2xx-series status code (#{response?.statusCode})"))
-      else
-        callback null,body
-
-  get_workspace:(org_id,workspace_id,callback)=>
-    params = {
-      url:@abs("/v2.0/org/#{org_id}/workspace/#{workspace_id}")
-      headers: { Authorization: "Bearer #{@config.oauth.access}" }
-      jar:null
-      json:true
-    }
-    request.get params, (err,response,body)=>
-      if err?
-        callback(err)
-      else unless /^2[0-9][0-9]$/.test "#{response?.statusCode}"
-        callback(new Error("Non-2xx-series status code (#{response?.statusCode})"))
-      else
-        callback null,body
-
-  list_notes:(org_id,workspace_id,note_type,callback)=>
-    params = {
-      url:@abs("/v2.0/org/#{org_id}/workspace/#{workspace_id}/notes?note_type=#{note_type}")
-      headers: { Authorization: "Bearer #{@config.oauth.access}" }
-      jar:null
-      json:true
-    }
-    request.get params, (err,response,body)=>
-      if err?
-        # console.error "ERROR",err
-        callback(err)
-      else unless /^2[0-9][0-9]$/.test "#{response?.statusCode}"
-        callback(new Error("Non-2xx-series status code (#{response?.statusCode})"))
-      else
-        callback null,body
-
-  get_note:(org_id,workspace_id,note_id,callback)=>
-    params = {
-      url:@abs("/v2.0/org/#{org_id}/workspace/#{workspace_id}/note/#{note_id}")
-      headers: { Authorization: "Bearer #{@config.oauth.access}" }
-      jar:null
-      json:true
-    }
-    request.get params, (err,response,body)=>
-      if err?
-        callback(err)
-      else unless /^2[0-9][0-9]$/.test "#{response?.statusCode}"
-        callback(new Error("Non-2xx-series status code (#{response?.statusCode})"))
-      else
-        callback null,body
-
-  _menu:(prompt,choices,dflt_key,callback)=>
-    unless choices?.length > 0
-      callback(null,null)
-    else
-      dflt_index = 1
-      console.log prompt
-      for choice,i in choices
-        key= choice[0]
-        label = choice[1]
-        console.log "  [#{i+1}] #{label}"
-        if key is dflt_key
-          dflt_index = i+1
-      rl = make_readline { input: process.stdin, output: process.stdout }
-      rl.question "[#{dflt_index}]> ", (selection)=>
-        if /^\s*$/.test selection
-          selection = dflt_index
-        else if /^\s*[0-9]\s*$/.test selection
-          selection = parseInt(selection)
-        rl.close()
-        unless 1 <= selection <= choices.length
-          console.log "\nNot Valid\n"
-          @_menu(prompt,choices,dflt_key,callback)
-        else
-          callback(null,choices[selection-1][0])
 
   choose_org:(callback)=>
     @list_orgs (err,orgs)=>
       if err?
         callback(err)
+      else if orgs.length is 0
+        console.error "No matching orgs."
+        callback(new Error( "No matching orgs."))
       else
         options = []
         for org,i in orgs
@@ -386,6 +303,9 @@ class Intellinote
     @list_workspaces org_id,(err,workspaces)=>
       if err?
         callback(err)
+      else if workspaces.length is 0
+        console.error "No matching workspaces."
+        callback(new Error( "No matching workspaces."))
       else
         options = []
         for workspace,i in workspaces
@@ -405,10 +325,13 @@ class Intellinote
     @list_notes org_id,workspace_id,note_type,(err,notes)=>
       if err?
         callback(err)
+      else if notes.length is 0
+        console.error "No matching #{note_type ? 'note'}s"
+        callback(new Error("No matching #{note_type ? 'note'}s"))
       else
         options = []
         for note,i in notes
-          options.push [note.note_id,"#{note.title} (#{note.note_id})"]
+          options.push [note.note_id,"#{(note.title ? '<untitled>').trim()} (#{note.note_id})"]
         dflt = @config?.current?.note_id
         if note_type is 'task'
           prompt = 'Task'
@@ -422,12 +345,88 @@ class Intellinote
             @config.current.note_id = note_id
             callback(null,note_id)
 
-  _request:(method,uri,body,stream,callback)=>
+  choose_attachment:(org_id,workspace_id,note_id,callback)=>
+    @list_attachments org_id,workspace_id,note_id,(err,attachments)=>
+      if err?
+        callback(err)
+      else if attachments.length is 0
+        console.error "No matching attachmentss"
+        callback(new Error("No matching attachments"))
+      else
+        options = []
+        for attachment,i in attachments
+          label = attachment.filename
+          if attachment.mime_type
+            label += " <#{attachment.mime_type}>"
+          label += " (#{attachment.attachment_id})"
+          options.push [attachment.attachment_id,label]
+        @_menu "Choose Attachment",options,null,(err,attachment_id)=>
+          if err?
+            callback(err)
+          else
+            callback(null,attachment_id)
+
+  list_orgs:(callback)=>
+    @http 'get', "/v2.0/orgs", (err,sc,body)=>
+      callback(err,body)
+
+  list_workspaces:(org_id,callback)=>
+    @http 'get', "/v2.0/org/#{org_id}/workspaces", (err,sc,body)=>
+      callback(err,body)
+
+  list_notes:(org_id,workspace_id,note_type,callback)=>
+    url = "/v2.0/org/#{org_id}/workspace/#{workspace_id}/notes"
+    if note_type?
+      url += "?note_type=#{note_type}"
+    @http 'get', url, (err,sc,body)=>
+      callback(err,body)
+
+  list_attachments:(org_id,workspace_id,note_id,callback)=>
+    @http 'get', "/v2.0/org/#{org_id}/workspace/#{workspace_id}/note/#{note_id}/attachments", (err,sc,body)=>
+      callback(err,body)
+
+  _menu:(prompt,choices,dflt_key,callback)=>
+    unless choices?.length > 0
+      callback(null,null)
+    else
+      console.log prompt
+      # list = new TermList(({ marker: '\x1b[36m› \x1b[0m', markerLength: 2 }))
+      list = new TermList()
+      for choice,i in choices
+        key = choice[0]
+        label = choice[1]
+        list.add key, label
+      if dflt_key?
+        list.select(dflt_key)
+      list.on 'keypress', (key, item)->
+        switch key.name
+          when 'return'
+            list.stop()
+            callback(null,item)
+      list.start()
+
+  http:(method,uri,body,callback)=>
     params = {
-      url:uri
-      headers: {
-        Authorization: "Bearer #{@config.oauth.access}"
-      }
+      url:@abs(uri)
+      headers: { Authorization: "Bearer #{@config.oauth.access}" }
+      jar:null
+      json:true
+    }
+    if (typeof body is 'function') and not callback?
+      callback = body
+      body = null
+    if body?
+      params.body = body
+    request[method] params, (err,response,body)=>
+      sc = response?.statusCode
+      unless err? or /^2[0-9][0-9]$/.test sc
+        err = new Error("Non-2xx-series status code (#{sc})")
+      callback(err,sc,body,response,params)
+
+  stream_http:(method,uri,body,stream,callback)=>
+    params = {
+      url:@abs(uri)
+      headers: { Authorization: "Bearer #{@config.oauth.access}" }
       jar:null
       json:true
     }
@@ -435,12 +434,13 @@ class Intellinote
       params.body = body
     response = null
     request[method](params).on("response",((r)=>response = r)).on("end", ()=>
-      if /^(4|5)[0-9][0-9]$/.test "#{response?.statusCode}"
-        callback(new Error("Error status code returned (#{response.statusCode}) for URI #{uri}",response.statusCode,response))
-      else
-        callback(null,response?.statusCode,response)
+      sc = response?.statusCode
+      err = null
+      unless /^2[0-9][0-9]$/.test sc
+        err = new Error("Non-2xx-series status code (#{sc})")
+      callback(err,sc,stream,response,params)
     ).on("error",(err)=>
-      callback(err,response?.statusCode,response)
+      callback(err,response?.statusCode,stream,response,params)
     ).pipe(stream)
 
   interactive_add_note:(type,callback)=>
@@ -485,136 +485,260 @@ class Intellinote
       else
         callback null,body
 
+  exit_error:(message,exit_code=1)=>
+    console.error "ERROR:",message
+    process.exit(exit_code)
+
+  exit_success:(message)=>
+    if message?
+      console.log message
+    console.log ""
+    process.exit(0)
+
+  cmd_http:(method,url,body)=>
+    m = method?.toLowerCase()
+    unless m in ['get','post','put','patch','options','head','delete']
+      @exit_error "Unrecognized HTTP verb #{method}"
+    else
+      m = 'del' if m is 'delete'
+      if body? and /^\s*[\"\{\[]/.test body
+        try
+          body = JSON.parse(body)
+        catch err
+          @exit_error "Error parsing body as JSON string: #{err}"
+       @ensure_access_token (err,success)=>
+         if err? or !success
+           @exit_error "Unable to obtain access token (#{err})."
+         else
+           @stream_http m, url, body, process.stdout, (err,sc,s,response,p)=>
+             if err?
+               @exit_error "Error executing #{method} #{url} (#{err})."
+             else
+               @exit_success()
+
+  clear_oauth:()=>
+    if @config?.oauth?
+      delete @config.oauth.access
+      delete @config.oauth.refreshed
+      delete @config.oauth.refresh
+
+  _parse_ins:(args)=>
+    result = {}
+    for i in [0...args.length-2]
+      if args[i] is "in" and args[i+2]?
+        if args[i+1] in ["org","organization"]
+          result.org_id = args[i+2]
+        else if args[i+1] in ["workspace","ws"]
+          result.workspace_id = args[i+2]
+        else if args[i+1] in ["note","task"]
+          result.note_id = args[i+2]
+    return result
+
   main:()=>
-    @read_config ()=>
-      switch process.argv[2]
+    try
+      @read_config ()=>
+        switch process.argv[2]
 
-        # HTTP VERBS
-        when 'GET','get','POST','post','PUT','put','PATCH','patch','OPTIONS','options','HEAD','head','DELETE','delete','DEL','del'
-          method = process.argv[2].toLowerCase()
-          if method is 'delete'
-            method = 'del'
-          url = process.argv[3]
-          url = @abs(url)
-          body = process.argv[4]
-          if body? and /^\s*[\"\{\[]/.test body
-            body = JSON.parse(body)
-          @ensure_access_token (err,success)=>
-            @_request method, url, body, process.stdout, (err,sc,response)=>
-              if err?
-                console.error "ERROR:",err
-                process.exit(2)
-              else unless /^2[0-9][0-9]$/.test "#{sc}"
-                console.error "WARNING: Non 2xx-series status code (#{sc})."
-              process.exit(0)
+          # HTTP
+          when "-X","HTTP","HTTPS"
+            @cmd_http(process.argv.slice(3)...)
 
-        # LOGIN
-        when 'login'
-          delete @config.oauth.access
-          delete @config.oauth.refreshed
-          delete @config.oauth.refresh
-          @ensure_active_access_token (err,success)=>
-            if not err? and success
-              process.exit(0)
-            else
-              console.error "ERROR: Unable to log in.\n"
-              process.exit(2)
-
-        # LOGOUT
-        when 'logout'
-          delete @config.oauth.access
-          delete @config.oauth.refreshed
-          delete @config.oauth.refresh
-          @write_config (err)=>
-            if err?
-              process.exit(2)
-            else
-              process.exit(0)
-
-        when 'select'
-          @ensure_active_access_token ()=>
-            @config.current ?= {}
-            if process.argv[3] in ['org','workspace','note','task']
-              @choose_org (err,org_id)=>
-                if process.argv[3] in ['workspace','note','task']
-                  @choose_workspace org_id,(err,workspace_id)=>
-                    if process.argv[3] in ['note','task']
-                      @choose_note org_id,workspace_id,process.argv[3],(err,note_id)=>
-                        @write_config ()=>process.exit(0)
-                    else
-                      @write_config ()=>process.exit(0)
+          # LIST
+          when "list"
+            if process.argv.length > 3
+              ctx = @_parse_ins process.argv.slice(4)
+            switch process.argv[3]
+              when "orgs"
+                @cmd_http "GET","/v2.0/orgs"
+              when "workspaces"
+                unless ctx.org_id?
+                  @exit_error "Expected 'in org <ORG-ID>' in: #{process.argv.slice(2).join(' ')}"
                 else
-                  @write_config ()=>process.exit(0)
-            else
-              console.error "Not recognized: ",process.argv[2..process.argv.length].join(' ')
+                  @cmd_http "GET","/v2.0/org/#{ctx.org_id}/workspaces"
+              when "notes","tasks"
+                unless ctx.workspace_id?
+                  @exit_error "Expected 'in workspace <WORKSPACE-ID> [in org <ORG-ID>]' in: #{process.argv.slice(2).join(' ')}"
+                else if ctx.org_id? and ctx.workspace_id?
+                  @cmd_http "GET","/v2.0/org/#{ctx.org_id}/workspace/#{ctx.workspace_id}/notes?type=#{process.argv[3].substring(0,4)}"
+                else
+                  @cmd_http "GET","/v2.0/workspace/#{ctx.workspace_id}/notes?type=#{process.argv[3].substring(0,4)}"
+              when "attachments"
+                if ctx.org_id? and ctx.workspace_id? and ctx.note_id?
+                  @cmd_http "GET","/v2.0/org/#{ctx.org_id}/workspace/#{ctx.workspace_id}/note/#{ctx.note_id}/attachments"
+                else
+                  @cmd_http "GET","/v2.0/note/#{ctx.note_id}/attachments"
+              else
+                @exit_error "Unrecognized action: #{process.argv.slice(2).join(' ')}"
 
-        when 'fetch'
-          @ensure_active_access_token ()=>
-            @config.current ?= {}
-            if process.argv[3] in ['org','workspace','note','task']
-              @choose_org (err,org_id)=>
-                if process.argv[3] in ['workspace','note','task']
-                  @choose_workspace org_id,(err,workspace_id)=>
-                    if err?
-                      console.error "ERROR",err
-                      process.exit(1)
-                    else
+          # FETCH
+          when "fetch"
+            if process.argv.length > 4
+              ctx = @_parse_ins process.argv.slice(5)
+            switch process.argv[3]
+              when "org","organization"
+                unless process.argv[4]?
+                  @exit_error "Expected 'org <ORG-ID>' in: #{process.argv.slice(2).join(' ')}"
+                else
+                  @cmd_http "GET","/v2.0/org/#{process.argv[4]}"
+              when "workspace","ws"
+                unless process.argv[4]?
+                  @exit_error "Expected 'workspace <WORKSPACE-ID>' in: #{process.argv.slice(2).join(' ')}"
+                else
+                  @cmd_http "GET","/v2.0/workspace/#{process.argv[4]}"
+              when "note","task"
+                unless process.argv[4]?
+                  @exit_error "Expected 'note <NOTE-ID>' or 'task <TASK-ID>' in: #{process.argv.slice(2).join(' ')}"
+                else
+                  @cmd_http "GET","/v2.0/note/#{process.argv[4]}"
+              when "attachment"
+                unless process.argv[4]?
+                  @exit_error "Expected 'attachment <ATTACHMENT-ID>' in: #{process.argv.slice(2).join(' ')}"
+                else
+                  @cmd_http "GET","/v2.0/attachment/#{process.argv[4]}"
+              else
+                @exit_error "Unrecognized action: #{process.argv.slice(2).join(' ')}"
+
+          # PING
+          when '--ping','ping'
+            @ensure_active_access_token (err,success)=>
+              if err? or !success
+                @exit_error "Unable to obtain access token (#{err})."
+              else
+                @ping (err,sc,body,response,params)=>
+                  if err?
+                    console.error params
+                    @exit_error err
+                  else
+                    @exit_success JSON.stringify(body)
+
+          # LOGIN
+          when 'login'
+            @clear_oauth()
+            @ensure_active_access_token (err,success)=>
+              if err?
+                @exit_error err
+              else if not success
+                @exit_error "Unable to obtain access token."
+              else
+                @exit_success()
+
+          # LOGOUT
+          when 'logout'
+            @clear_oauth()
+            @write_config (err)=>
+              if err?
+                @exit_error "Unable to re-write configuration file at #{CONFIG_FILE} (#{err})."
+              else
+                @exit_success()
+
+          when 'set'
+            @ensure_active_access_token ()=>
+              @config.current ?= {}
+              if process.argv[3] in ['org','workspace','note','task']
+                @choose_org (err,org_id)=>
+                  if process.argv[3] in ['workspace','note','task']
+                    @choose_workspace org_id,(err,workspace_id)=>
                       if process.argv[3] in ['note','task']
                         @choose_note org_id,workspace_id,process.argv[3],(err,note_id)=>
-                          if err?
-                            console.error "ERROR",err
-                            process.exit(1)
-                          else
-                            @get_note org_id,workspace_id,note_id,(err,note)=>
-                              if err?
-                                process.exit(1)
-                              else
-                                console.log(JSON.stringify(note,null,2)+"\n")
-                                process.exit(0)
+                          @write_config ()=>process.exit(0)
                       else
-                        @get_workspace org_id, workspace_id,(err,workspace)=>
-                          if err?
-                            process.exit(1)
-                          else
-                            console.log(JSON.stringify(workspace,null,2)+"\n")
-                            process.exit(0)
-                else
-                  @get_org org_id,(err,org)=>
-                    if err?
-                      process.exit(1)
-                    else
-                      console.log(JSON.stringify(org,null,2)+"\n")
-                      process.exit(0)
-            else
-              console.error "Not recognized: ",process.argv[2..process.argv.length].join(' ')
-              process.exit(1)
-
-        # ADD NOTE/TASK
-        when '+note','+task'
-          @ensure_active_access_token ()=>
-            @interactive_add_note process.argv[2].substring(1),(err,response)=>
-              if err?
-                console.error "ERROR:",err
-                process.exit(2)
+                        @write_config ()=>process.exit(0)
+                  else
+                    @write_config ()=>process.exit(0)
               else
-                console.log "Created",response
-                @write_config ()=>process.exit(0)
+                console.error "Not recognized: ",process.argv[2..process.argv.length].join(' ')
 
-        # VERSION
-        when '--version', '-v'
-          pkg = require(path.join(__dirname,'..','package.json'))
-          console.log "#{pkg.name} #{pkg.version}"
-          process.exit 0
+          when 'get'
+            @ensure_active_access_token ()=>
+              @config.current ?= {}
+              if process.argv[3] in ['org','workspace','note','task','attachment']
+                @choose_org (err,org_id)=>
+                  if err?
+                    @exit_error err
+                  else
+                    if process.argv[3] in ['workspace','note','task','attachment']
+                      @choose_workspace org_id,(err,workspace_id)=>
+                        if err?
+                          @exit_error err
+                        else
+                          if process.argv[3] in ['note','task','attachment']
+                            note_type = null
+                            if process.argv[3] in ['note','task']
+                              note_type = process.argv[3]
+                            @choose_note org_id,workspace_id,note_type,(err,note_id)=>
+                              if err?
+                                @exit_error err
+                              else
+                                if process.argv[3] in ['attachment']
+                                  @choose_attachment org_id,workspace_id,note_id,(err,attachment_id)=>
+                                    if err?
+                                      @exit_error err
+                                    else
+                                      @cmd_http "GET","/v2.0/org/#{org_id}/workspace/#{workspace_id}/note/#{note_id}/attachment/#{attachment_id}"
+                                else
+                                  @cmd_http "GET","/v2.0/org/#{org_id}/workspace/#{workspace_id}/note/#{note_id}"
+                          else
+                            @cmd_http "GET","/v2.0/org/#{org_id}/workspace/#{workspace_id}"
+                    else
+                      @cmd_http "GET","/v2.0/org/#{org_id}"
+              else
+                console.error "Not recognized: ",process.argv[2..process.argv.length].join(' ')
+                process.exit(1)
 
-        # HELP OR ERROR
-        else
-          console.log "USE: intellinote login|logout|(GET|POST|PUT|PATCH|DELETE|HEAD <URL> [<BODY>])"
-          if /^((-?-?)|\/)?(h(elp)?)|\?$/i.test process.argv[2]
-            process.exit 0
+          # ADD NOTE/TASK
+          when '+note','+task'
+            @ensure_active_access_token ()=>
+              @interactive_add_note process.argv[2].substring(1),(err,response)=>
+                if err?
+                  console.error "ERROR:",err
+                  process.exit(2)
+                else
+                  console.log "Created",response
+                  @write_config ()=>process.exit(0)
+
+          # VERSION
+          when '--version', '-v'
+            pkg = require(path.join(__dirname,'..','package.json'))
+            @exit_success "#{pkg.name} #{pkg.version}"
+
+
+          # HELP OR ERROR
           else
-            process.exit 1
+            if /^((-?-?)|\/)?(h(elp)?)|\?$/i.test process.argv[2]
+              @exit_success HELP
+            else
+              @exit_error HELP
+    catch err
+      @exit_error "Uncaught exception #{err}"
 
 exports.Intellinote = Intellinote
 
 if require.main is module
   (new Intellinote()).main()
+
+
+# THIS VERSION OF _menu USES A SIMPLE TEXT MENU INSTEAD OF node-term-list
+  # _menu:(prompt,choices,dflt_key,callback)=>
+  #   unless choices?.length > 0
+  #     callback(null,null)
+  #   else
+  #     dflt_index = 1
+  #     console.log prompt
+  #     for choice,i in choices
+  #       key= choice[0]
+  #       label = choice[1]
+  #       console.log "  [#{i+1}] #{label}"
+  #       if key is dflt_key
+  #         dflt_index = i+1
+  #     rl = make_readline { input: process.stdin, output: process.stdout }
+  #     rl.question "[#{dflt_index}]> ", (selection)=>
+  #       if /^\s*$/.test selection
+  #         selection = dflt_index
+  #       else if /^\s*[0-9]\s*$/.test selection
+  #         selection = parseInt(selection)
+  #       rl.close()
+  #       unless 1 <= selection <= choices.length
+  #         console.log "\nNot Valid\n"
+  #         @_menu(prompt,choices,dflt_key,callback)
+  #       else
+  #         callback(null,choices[selection-1][0])
