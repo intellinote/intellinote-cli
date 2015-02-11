@@ -1,6 +1,6 @@
 {
   "name"        : "intellinote-cli",
-  "version"     : "0.1.1",
+  "version"     : "0.2.0",
   "description" : "A simple command-line client to Intellinote.",
   "repository"  : { "type": "git", "url": "https://github.com/intellinote/intellinote-cli.git" },
   "bugs"        : { "url": "https://github.com/intellinote/intellinote-cli/issues" },
